@@ -1,3 +1,4 @@
+.claude/
 model.joblib
 .env
 __pycache__
