@@ -17,6 +17,7 @@ class JMAPClient:
         resp = httpx.get(
             "https://api.fastmail.com/.well-known/jmap",
             headers={"Authorization": f"Bearer {self.token}"},
+            follow_redirects=True,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -39,8 +40,8 @@ class JMAPClient:
         data = resp.json()
         responses = data["methodResponses"]
         for r in responses:
-            if r[0].endswith("/error"):
-                raise RuntimeError(f"JMAP error: {r[1]}")
+            if r[0].endswith("/error") or r[0] == "error":
+                raise RuntimeError(f"JMAP error in {r[0]}: {r[1]}")
         return responses
 
     def get_inbox_emails(self, limit: int = 500) -> list[dict]:
@@ -80,10 +81,9 @@ class JMAPClient:
                         "threadId",
                         "mailboxIds",
                         "keywords",
-                        "header:List-Unsubscribe:asText",
-                        "header:Precedence:asText",
-                        "header:X-Mailer:asText",
-                        "header:Content-Type:asText",
+                        "header:List-Unsubscribe",
+                        "header:Precedence",
+                        "header:X-Mailer",
                     ],
                 },
                 "1",

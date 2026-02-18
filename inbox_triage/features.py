@@ -26,16 +26,16 @@ def extract_features(email: dict) -> str:
     parts.append(subject)
 
     # List-Unsubscribe header
-    if email.get("header:List-Unsubscribe:asText") is not None:
+    if email.get("header:List-Unsubscribe") is not None:
         parts.append("HAS_LIST_UNSUBSCRIBE")
 
     # Precedence header
-    precedence = email.get("header:Precedence:asText")
+    precedence = email.get("header:Precedence")
     if precedence and any(w in precedence.lower() for w in ("bulk", "list")):
         parts.append("PRECEDENCE_BULK")
 
     # X-Mailer header
-    if email.get("header:X-Mailer:asText") is not None:
+    if email.get("header:X-Mailer") is not None:
         parts.append("HAS_XMAILER")
 
     # Preview (first 200 chars)
