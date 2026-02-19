@@ -1,6 +1,6 @@
 # inbox-triage
 
-Classify and archive transactional emails in your Fastmail inbox using a logistic regression classifier trained on your own flagged/unflagged email patterns.
+Classify and archive transactional emails in your Fastmail inbox using a logistic regression classifier trained on your archived email patterns.
 
 ## Setup
 
@@ -17,13 +17,21 @@ Edit `.env` with your Fastmail credentials:
 
 ### Train the model
 
-Flag emails in your inbox that you want to **keep**, then:
+Training uses your **Archive** folder as labeled data, plus any flagged emails still in your inbox. Flag emails you consider important, then archive them. The classifier learns from this:
+
+- **Flagged** = "keep" (important)
+- **Unflagged + archived** = "transactional" (swept away)
 
 ```bash
 uv run inbox-triage train
 ```
 
-Flagged emails = "keep". Unflagged = "transactional" (archive candidates).
+Training reports errors asymmetrically — false archives (important email archived) are dangerous, false keeps (junk left in inbox) are harmless:
+
+```
+  False archives (keep → trans):   16   ← dangerous
+  False keeps (trans → keep):     2310   ← harmless
+```
 
 ### Classify and archive
 
@@ -45,3 +53,7 @@ uv run inbox-triage review
 ```
 
 Shows emails in the 0.5–0.85 confidence band. Flag important ones and re-train to improve accuracy.
+
+## License
+
+AGPL-3.0-or-later. See [LICENSE](LICENSE).
