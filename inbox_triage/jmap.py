@@ -196,6 +196,24 @@ class JMAPClient:
         ])
         return create_resp[0][1]["created"]["new"]["id"]
 
+    def batch_set_flag(self, email_ids: list[str], flagged: bool = True):
+        keyword = "$flagged"
+        chunk_size = 50
+        for i in range(0, len(email_ids), chunk_size):
+            chunk = email_ids[i : i + chunk_size]
+            patch = {f"keywords/{keyword}": True} if flagged else {f"keywords/{keyword}": None}
+            update = {eid: patch for eid in chunk}
+            resp = self._jmap_call([
+                [
+                    "Email/set",
+                    {"accountId": self.account_id, "update": update},
+                    "f0",
+                ]
+            ])
+            not_updated = resp[0][1].get("notUpdated")
+            if not_updated:
+                raise RuntimeError(f"Failed to flag emails: {not_updated}")
+
     def batch_move(self, email_ids: list[str], destination_mailbox_id: str):
         chunk_size = 50
         for i in range(0, len(email_ids), chunk_size):

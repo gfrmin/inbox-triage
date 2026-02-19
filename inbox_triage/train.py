@@ -5,6 +5,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_predict, StratifiedKFold
 from sklearn.pipeline import Pipeline
 
+from inbox_triage.dedup import deduplicate_emails
 from inbox_triage.features import extract_features_batch
 from inbox_triage.jmap import JMAPClient
 
@@ -24,6 +25,9 @@ def train_model(client: JMAPClient, limit: int = 10000) -> tuple[Pipeline, dict]
             if e["id"] not in seen_ids:
                 emails.append(e)
 
+    # Dedup training data (prefers flagged copy, then newest)
+    emails, _dupes = deduplicate_emails(emails)
+
     features = extract_features_batch(emails)
 
     # Label: 0 = keep (flagged), 1 = transactional (unflagged)
@@ -39,12 +43,12 @@ def train_model(client: JMAPClient, limit: int = 10000) -> tuple[Pipeline, dict]
         ("clf", LogisticRegression(max_iter=1000, class_weight="balanced")),
     ])
 
-    # Cross-validation with predict_proba to evaluate at runtime threshold (0.85)
+    # Cross-validation with predict_proba to evaluate at runtime threshold (0.90)
     n_splits = min(5, n_keep, n_trans)
     cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
     probas = cross_val_predict(pipeline, features, labels, cv=cv, method="predict_proba")
     transactional_proba = probas[:, 1]  # class 1 = transactional
-    predictions = (transactional_proba >= 0.85).astype(int)
+    predictions = (transactional_proba >= 0.90).astype(int)
 
     false_archives = []
     false_keeps = []
