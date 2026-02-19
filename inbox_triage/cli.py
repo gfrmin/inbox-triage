@@ -25,11 +25,12 @@ def cli():
 
 
 @cli.command()
-def train():
-    """Train the classifier on your flagged/unflagged inbox emails."""
+@click.option("--limit", default=10000, type=int, help="Max emails to sample from archive.")
+def train(limit: int):
+    """Train the classifier on a random sample of your archived emails."""
     client = JMAPClient()
-    console.print("Fetching inbox emails...")
-    _pipeline, metrics = train_model(client)
+    console.print(f"Fetching up to {limit} archive emails for training...")
+    _pipeline, metrics = train_model(client, limit=limit)
 
     console.print()
     console.print(f"[bold]Training results[/bold] ({metrics['n_emails']} emails)")
@@ -39,14 +40,37 @@ def train():
     console.print(
         f"  Transactional:         {metrics['n_transactional']}"
     )
+    false_archives = metrics["false_archives"]
+    false_keeps = metrics["false_keeps"]
     console.print(
-        f"  Accuracy:              {metrics['accuracy_mean']:.1%} "
-        f"(+/- {metrics['accuracy_std']:.1%})"
+        f"  False archives (keep → trans):  {len(false_archives):>3}   ← dangerous"
     )
     console.print(
-        f"  F1 score:              {metrics['f1_mean']:.1%} "
-        f"(+/- {metrics['f1_std']:.1%})"
+        f"  False keeps (trans → keep):     {len(false_keeps):>3}   ← harmless"
     )
+
+    all_errors = false_archives + false_keeps
+    if all_errors:
+        console.print()
+        console.print(f"[bold]Misclassified ({len(all_errors)} emails)[/bold]")
+        error_table = Table()
+        error_table.add_column("Type", style="cyan")
+        error_table.add_column("Sender", max_width=30)
+        error_table.add_column("Subject", max_width=50)
+        for err in false_archives:
+            error_table.add_row(
+                "[red]false archive[/red]",
+                _sender(err["email"]),
+                (err["email"].get("subject") or "")[:50],
+            )
+        for err in false_keeps:
+            error_table.add_row(
+                "false keep",
+                _sender(err["email"]),
+                (err["email"].get("subject") or "")[:50],
+            )
+        console.print(error_table)
+
     console.print()
     console.print("[green]Model saved to model.joblib[/green]")
 

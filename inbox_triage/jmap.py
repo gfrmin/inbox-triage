@@ -2,6 +2,19 @@ import os
 
 import httpx
 
+EMAIL_PROPERTIES = [
+    "id",
+    "subject",
+    "from",
+    "preview",
+    "threadId",
+    "mailboxIds",
+    "keywords",
+    "header:List-Unsubscribe",
+    "header:Precedence",
+    "header:X-Mailer",
+]
+
 
 class JMAPClient:
     def __init__(self):
@@ -44,52 +57,114 @@ class JMAPClient:
                 raise RuntimeError(f"JMAP error in {r[0]}: {r[1]}")
         return responses
 
-    def get_inbox_emails(self, limit: int = 500) -> list[dict]:
-        # First get inbox mailbox ID
-        mailbox_resp = self._jmap_call([
+    def _get_mailbox_id_by_role(self, role: str) -> str:
+        resp = self._jmap_call([
             ["Mailbox/get", {"accountId": self.account_id, "ids": None}, "m0"]
         ])
-        mailboxes = mailbox_resp[0][1]["list"]
-        inbox_id = next(m["id"] for m in mailboxes if m.get("role") == "inbox")
+        mailboxes = resp[0][1]["list"]
+        return next(m["id"] for m in mailboxes if m.get("role") == role)
 
-        # Query + fetch in one request
-        responses = self._jmap_call([
-            [
-                "Email/query",
-                {
-                    "accountId": self.account_id,
-                    "filter": {"inMailbox": inbox_id},
-                    "sort": [{"property": "receivedAt", "isAscending": False}],
-                    "limit": limit,
-                },
-                "0",
-            ],
-            [
-                "Email/get",
-                {
-                    "accountId": self.account_id,
-                    "#ids": {
-                        "resultOf": "0",
-                        "name": "Email/query",
-                        "path": "/ids",
+    def _query_email_ids(self, mailbox_id: str, limit: int | None = None) -> list[str]:
+        all_ids = []
+        position = 0
+        batch_size = 500
+        while True:
+            if limit is not None:
+                remaining = limit - len(all_ids)
+                if remaining <= 0:
+                    break
+                batch_size = min(500, remaining)
+            responses = self._jmap_call([
+                [
+                    "Email/query",
+                    {
+                        "accountId": self.account_id,
+                        "filter": {"inMailbox": mailbox_id},
+                        "sort": [{"property": "receivedAt", "isAscending": False}],
+                        "position": position,
+                        "limit": batch_size,
                     },
-                    "properties": [
-                        "id",
-                        "subject",
-                        "from",
-                        "preview",
-                        "threadId",
-                        "mailboxIds",
-                        "keywords",
-                        "header:List-Unsubscribe",
-                        "header:Precedence",
-                        "header:X-Mailer",
-                    ],
-                },
-                "1",
-            ],
-        ])
-        return responses[1][1]["list"]
+                    "0",
+                ]
+            ])
+            ids = responses[0][1]["ids"]
+            if not ids:
+                break
+            all_ids.extend(ids)
+            position += len(ids)
+            if len(ids) < batch_size:
+                break
+        return all_ids[:limit] if limit else all_ids
+
+    def _query_email_ids_filtered(
+        self, mailbox_id: str, has_keyword: str,
+    ) -> list[str]:
+        all_ids = []
+        position = 0
+        batch_size = 500
+        while True:
+            responses = self._jmap_call([
+                [
+                    "Email/query",
+                    {
+                        "accountId": self.account_id,
+                        "filter": {
+                            "operator": "AND",
+                            "conditions": [
+                                {"inMailbox": mailbox_id},
+                                {"hasKeyword": has_keyword},
+                            ],
+                        },
+                        "sort": [{"property": "receivedAt", "isAscending": False}],
+                        "position": position,
+                        "limit": batch_size,
+                    },
+                    "0",
+                ]
+            ])
+            ids = responses[0][1]["ids"]
+            if not ids:
+                break
+            all_ids.extend(ids)
+            position += len(ids)
+            if len(ids) < batch_size:
+                break
+        return all_ids
+
+    def _fetch_emails(self, ids: list[str]) -> list[dict]:
+        all_emails = []
+        for i in range(0, len(ids), 100):
+            chunk = ids[i : i + 100]
+            responses = self._jmap_call([
+                [
+                    "Email/get",
+                    {
+                        "accountId": self.account_id,
+                        "ids": chunk,
+                        "properties": EMAIL_PROPERTIES,
+                    },
+                    "0",
+                ]
+            ])
+            all_emails.extend(responses[0][1]["list"])
+        return all_emails
+
+    def get_inbox_emails(self, limit: int = 500) -> list[dict]:
+        mailbox_id = self._get_mailbox_id_by_role("inbox")
+        ids = self._query_email_ids(mailbox_id, limit)
+        return self._fetch_emails(ids)
+
+    def get_flagged_inbox_emails(self) -> list[dict]:
+        mailbox_id = self._get_mailbox_id_by_role("inbox")
+        ids = self._query_email_ids_filtered(
+            mailbox_id, has_keyword="$flagged",
+        )
+        return self._fetch_emails(ids)
+
+    def get_archive_emails(self, limit: int = 2000) -> list[dict]:
+        mailbox_id = self._get_mailbox_id_by_role("archive")
+        ids = self._query_email_ids(mailbox_id, limit)
+        return self._fetch_emails(ids)
 
     def get_mailbox_id(self, name: str) -> str:
         resp = self._jmap_call([
