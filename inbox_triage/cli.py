@@ -34,14 +34,15 @@ def cli():
 @cli.command()
 @click.option("--dry-run/--execute", default=True, help="Dry run (default) or execute archiving.")
 @click.option("--limit", default=500, type=int, help="Max emails to fetch.")
-def run(dry_run: bool, limit: int):
+@click.option("--no-cache", is_flag=True, default=False, help="Bypass classification cache.")
+def run(dry_run: bool, limit: int, no_cache: bool):
     """Classify inbox emails and archive noise."""
     client = JMAPClient()
     console.print("Fetching inbox emails...")
     emails = client.get_inbox_emails(limit=limit)
     console.print(f"Fetched {len(emails)} emails. Classifying with LLM...")
 
-    results = classify_emails(emails)
+    results = classify_emails(emails, use_cache=not no_cache)
 
     noise = [r for r in results if r["category"] == "noise"]
 
@@ -102,14 +103,15 @@ def run(dry_run: bool, limit: int):
 
 @cli.command()
 @click.option("--limit", default=500, type=int, help="Max emails to fetch.")
-def review(limit: int):
+@click.option("--no-cache", is_flag=True, default=False, help="Bypass classification cache.")
+def review(limit: int, no_cache: bool):
     """Show classified emails — action_needed and fyi — with reasons."""
     client = JMAPClient()
     console.print("Fetching inbox emails...")
     emails = client.get_inbox_emails(limit=limit)
     console.print(f"Fetched {len(emails)} emails. Classifying with LLM...")
 
-    results = classify_emails(emails)
+    results = classify_emails(emails, use_cache=not no_cache)
 
     reviewable = [r for r in results if r["category"] != "noise"]
 

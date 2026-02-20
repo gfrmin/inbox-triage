@@ -4,3 +4,4 @@ model.joblib
 __pycache__
 *.pyc
 .venv
+.cache/

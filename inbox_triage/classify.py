@@ -96,6 +96,23 @@ async def _classify_batch(emails: list[dict]) -> list[dict]:
         return await asyncio.gather(*tasks)
 
 
-def classify_emails(emails: list[dict]) -> list[dict]:
+def classify_emails(emails: list[dict], *, use_cache: bool = True) -> list[dict]:
     """Classify a batch of emails concurrently. Returns [{email, category, reason}]."""
-    return asyncio.run(_classify_batch(emails))
+    if not use_cache:
+        return asyncio.run(_classify_batch(emails))
+
+    from inbox_triage.cache import cache_key, load_cache, partition_by_cache, save_cache
+
+    cache = load_cache()
+    hits, misses = partition_by_cache(emails, cache, MODEL)
+
+    if not misses:
+        return hits
+
+    fresh = asyncio.run(_classify_batch(misses))
+    for r in fresh:
+        key = cache_key(MODEL, r["email"]["id"])
+        cache[key] = {"category": r["category"], "reason": r["reason"]}
+    save_cache(cache)
+
+    return hits + fresh

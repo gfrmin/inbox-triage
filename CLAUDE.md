@@ -18,3 +18,4 @@ Email triage CLI that classifies Fastmail inbox emails via local Ollama LLM and 
 - Emails processed sequentially (~0.7s each)
 - Fastmail credentials via `FASTMAIL_USER` and `FASTMAIL_TOKEN` env vars (loaded from `.env`)
 - Dependencies: httpx, click, rich, python-dotenv (no ML libraries)
+- Classification cache at `$XDG_CACHE_HOME/inbox-triage/classifications.json` (key: `{model}:{email_id}`); bypass with `--no-cache`
