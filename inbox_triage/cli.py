@@ -3,10 +3,9 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
-from inbox_triage.classify import classify_emails, get_uncertain_emails
+from inbox_triage.classify import classify_emails
 from inbox_triage.dedup import deduplicate_emails
 from inbox_triage.jmap import JMAPClient
-from inbox_triage.train import train_model
 
 load_dotenv()
 
@@ -20,95 +19,52 @@ def _sender(email: dict) -> str:
     return "unknown"
 
 
+CATEGORY_STYLES = {
+    "action_needed": "bold red",
+    "fyi": "yellow",
+    "noise": "dim",
+}
+
+
 @click.group()
 def cli():
-    """Inbox triage — classify and archive transactional emails."""
-
-
-@cli.command()
-@click.option("--limit", default=10000, type=int, help="Max emails to sample from archive.")
-def train(limit: int):
-    """Train the classifier on a random sample of your archived emails."""
-    client = JMAPClient()
-    console.print(f"Fetching up to {limit} archive emails for training...")
-    _pipeline, metrics = train_model(client, limit=limit)
-
-    console.print()
-    console.print(f"[bold]Training results[/bold] ({metrics['n_emails']} emails)")
-    console.print(
-        f"  Keep (flagged):        {metrics['n_keep']}"
-    )
-    console.print(
-        f"  Transactional:         {metrics['n_transactional']}"
-    )
-    false_archives = metrics["false_archives"]
-    false_keeps = metrics["false_keeps"]
-    console.print(
-        f"  False archives (keep → trans):  {len(false_archives):>3}   ← dangerous"
-    )
-    console.print(
-        f"  False keeps (trans → keep):     {len(false_keeps):>3}   ← harmless"
-    )
-
-    all_errors = false_archives + false_keeps
-    if all_errors:
-        console.print()
-        console.print(f"[bold]Misclassified ({len(all_errors)} emails)[/bold]")
-        error_table = Table()
-        error_table.add_column("Type", style="cyan")
-        error_table.add_column("Sender", max_width=30)
-        error_table.add_column("Subject", max_width=50)
-        for err in false_archives:
-            error_table.add_row(
-                "[red]false archive[/red]",
-                _sender(err["email"]),
-                (err["email"].get("subject") or "")[:50],
-            )
-        for err in false_keeps:
-            error_table.add_row(
-                "false keep",
-                _sender(err["email"]),
-                (err["email"].get("subject") or "")[:50],
-            )
-        console.print(error_table)
-
-    console.print()
-    console.print("[green]Model saved to model.joblib[/green]")
+    """Inbox triage — classify and archive emails using LLM."""
 
 
 @cli.command()
 @click.option("--dry-run/--execute", default=True, help="Dry run (default) or execute archiving.")
-@click.option("--threshold", default=0.90, type=float, help="Confidence threshold (default: 0.90).")
 @click.option("--limit", default=500, type=int, help="Max emails to fetch.")
-def run(dry_run: bool, threshold: float, limit: int):
-    """Classify inbox emails and archive transactional ones."""
+def run(dry_run: bool, limit: int):
+    """Classify inbox emails and archive noise."""
     client = JMAPClient()
     console.print("Fetching inbox emails...")
     emails = client.get_inbox_emails(limit=limit)
-    console.print(f"Fetched {len(emails)} emails. Classifying...")
+    console.print(f"Fetched {len(emails)} emails. Classifying with LLM...")
 
-    results = classify_emails(emails, threshold=threshold)
+    results = classify_emails(emails)
 
-    # Dedup: among emails NOT being archived, keep only newest per sender+subject
-    archive_ids = {r["email"]["id"] for r in results}
-    keep_emails = [e for e in emails if e["id"] not in archive_ids]
+    noise = [r for r in results if r["category"] == "noise"]
+
+    # Dedup among non-noise emails
+    noise_ids = {r["email"]["id"] for r in noise}
+    keep_emails = [e for e in emails if e["id"] not in noise_ids]
     _unique, dupes = deduplicate_emails(keep_emails)
 
-    if not results and not dupes:
-        console.print("No emails above threshold.")
+    if not noise and not dupes:
+        console.print("No emails to archive.")
         return
 
-    if results:
-        table = Table(title="Transactional Emails")
+    if noise:
+        table = Table(title="Noise (will be archived)")
         table.add_column("Sender", style="cyan", max_width=35)
         table.add_column("Subject", max_width=50)
-        table.add_column("Confidence", justify="right", style="green")
+        table.add_column("Reason", style="dim", max_width=40)
 
-        for r in results:
+        for r in noise:
             table.add_row(
                 _sender(r["email"]),
                 (r["email"].get("subject") or "")[:50],
-                f"{r['probability']:.0%}",
+                r["reason"][:40],
             )
 
         console.print(table)
@@ -128,64 +84,68 @@ def run(dry_run: bool, threshold: float, limit: int):
 
         console.print(dupe_table)
 
-    all_archive_ids = [r["email"]["id"] for r in results] + [d["id"] for d in dupes]
+    all_archive_ids = [r["email"]["id"] for r in noise] + [d["id"] for d in dupes]
 
     if dry_run:
         console.print(
-            f"\n[yellow]{len(results)} transactional + {len(dupes)} duplicates = "
+            f"\n[yellow]{len(noise)} noise + {len(dupes)} duplicates = "
             f"{len(all_archive_ids)} emails would be archived.[/yellow]"
         )
     else:
         archive_id = client.get_mailbox_id("archive")
         client.batch_move(all_archive_ids, archive_id)
         console.print(
-            f"\n[green]{len(results)} transactional + {len(dupes)} duplicates = "
+            f"\n[green]{len(noise)} noise + {len(dupes)} duplicates = "
             f"{len(all_archive_ids)} emails archived.[/green]"
         )
 
 
 @cli.command()
 @click.option("--limit", default=500, type=int, help="Max emails to fetch.")
-@click.option("--low", default=0.5, type=float, help="Lower confidence bound (default: 0.5).")
-@click.option("--high", default=0.90, type=float, help="Upper confidence bound (default: 0.90).")
-def review(limit: int, low: float, high: float):
-    """Show uncertain emails and optionally flag them as 'keep'."""
+def review(limit: int):
+    """Show classified emails — action_needed and fyi — with reasons."""
     client = JMAPClient()
     console.print("Fetching inbox emails...")
     emails = client.get_inbox_emails(limit=limit)
+    console.print(f"Fetched {len(emails)} emails. Classifying with LLM...")
 
-    results = get_uncertain_emails(emails, low=low, high=high)
+    results = classify_emails(emails)
 
-    if not results:
-        console.print("No uncertain emails found.")
+    reviewable = [r for r in results if r["category"] != "noise"]
+
+    if not reviewable:
+        console.print("No action_needed or fyi emails found.")
         return
 
-    table = Table(title=f"Uncertain Emails ({low:.0%}-{high:.0%})")
+    table = Table(title="Inbox Review")
     table.add_column("#", justify="right", style="dim")
+    table.add_column("Category", max_width=15)
     table.add_column("Sender", style="cyan", max_width=35)
     table.add_column("Subject", max_width=50)
-    table.add_column("Confidence", justify="right", style="yellow")
+    table.add_column("Reason", style="dim", max_width=40)
 
-    for i, r in enumerate(results):
+    for i, r in enumerate(reviewable):
+        style = CATEGORY_STYLES.get(r["category"], "")
         table.add_row(
             str(i),
+            f"[{style}]{r['category']}[/{style}]",
             _sender(r["email"]),
             (r["email"].get("subject") or "")[:50],
-            f"{r['probability']:.0%}",
+            r["reason"][:40],
         )
 
     console.print(table)
-    console.print(f"\n{len(results)} uncertain emails.")
+    console.print(f"\n{len(reviewable)} emails to review.")
 
     selection = console.input(
-        "\n[bold]Flag as keep[/bold] (comma-separated numbers, 'all', or Enter to skip): "
+        "\n[bold]Flag for follow-up[/bold] (comma-separated numbers, 'all', or Enter to skip): "
     ).strip()
 
     if not selection:
         return
 
     if selection.lower() == "all":
-        indices = list(range(len(results)))
+        indices = list(range(len(reviewable)))
     else:
         indices = []
         for part in selection.split(","):
@@ -195,12 +155,12 @@ def review(limit: int, low: float, high: float):
                 indices.extend(range(int(lo), int(hi) + 1))
             else:
                 indices.append(int(part))
-        indices = [i for i in indices if 0 <= i < len(results)]
+        indices = [i for i in indices if 0 <= i < len(reviewable)]
 
     if not indices:
         console.print("No valid indices.")
         return
 
-    email_ids = [results[i]["email"]["id"] for i in indices]
+    email_ids = [reviewable[i]["email"]["id"] for i in indices]
     client.batch_set_flag(email_ids, flagged=True)
-    console.print(f"\n[green]Flagged {len(email_ids)} emails as keep.[/green] Re-train to update the model.")
+    console.print(f"\n[green]Flagged {len(email_ids)} emails for follow-up.[/green]")
