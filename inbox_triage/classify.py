@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 
@@ -55,14 +56,46 @@ def classify_email(email: dict) -> dict:
     return {"category": category, "reason": parsed.get("reason", "")}
 
 
+CONCURRENCY = int(os.environ.get("OLLAMA_CONCURRENCY", "4"))
+
+
+async def _classify_email_async(client: httpx.AsyncClient, email: dict) -> dict:
+    """Classify a single email asynchronously."""
+    resp = await client.post(
+        f"{OLLAMA_URL}/v1/chat/completions",
+        json={
+            "model": MODEL,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": _build_user_message(email)},
+            ],
+            "response_format": {"type": "json_object"},
+        },
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    content = resp.json()["choices"][0]["message"]["content"]
+    parsed = json.loads(content)
+
+    category = parsed.get("category", "fyi")
+    if category not in ("action_needed", "fyi", "noise"):
+        category = "fyi"
+
+    return {"email": email, "category": category, "reason": parsed.get("reason", "")}
+
+
+async def _classify_batch(emails: list[dict]) -> list[dict]:
+    sem = asyncio.Semaphore(CONCURRENCY)
+
+    async def _limited(client, email):
+        async with sem:
+            return await _classify_email_async(client, email)
+
+    async with httpx.AsyncClient() as client:
+        tasks = [_limited(client, email) for email in emails]
+        return await asyncio.gather(*tasks)
+
+
 def classify_emails(emails: list[dict]) -> list[dict]:
-    """Classify a batch of emails sequentially. Returns [{email, category, reason}]."""
-    results = []
-    for email in emails:
-        result = classify_email(email)
-        results.append({
-            "email": email,
-            "category": result["category"],
-            "reason": result["reason"],
-        })
-    return results
+    """Classify a batch of emails concurrently. Returns [{email, category, reason}]."""
+    return asyncio.run(_classify_batch(emails))
